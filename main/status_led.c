@@ -11,7 +11,7 @@
 #include "freertos/task.h"
 
 // Goouuu ESP32-S3 N16R8 dual-USB-C board's onboard WS2812 RGB LED.
-#define STATUS_LED_GPIO GPIO_NUM_38
+#define STATUS_LED_GPIO GPIO_NUM_48
 #define RMT_RESOLUTION_HZ 10000000
 #define WS2812_DATA_BITS 24
 #define WS2812_TOTAL_SYMBOLS (WS2812_DATA_BITS + 1)

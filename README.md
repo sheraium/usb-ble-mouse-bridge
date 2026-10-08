@@ -66,7 +66,8 @@ the current public USB HID API/firmware path.
 ## RGB status LED
 
 On the Goouuu ESP32-S3 N16R8 dual-USB-C board, the onboard WS2812 RGB LED is
-driven through GPIO38. Other N16R8 board variants may use a different pin.
+driven through GPIO48 in this build. Goouuu N16R8 board revisions vary; some
+revisions may use GPIO38 instead.
 
 - Slow blue blink: waiting for a BLE host connection.
 - Solid green: BLE connected and a standard USB mouse interface is present.
