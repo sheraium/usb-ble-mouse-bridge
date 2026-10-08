@@ -6,6 +6,9 @@
 #include "esp_hid_common.h"
 #include "esp_hid_gap.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "status_led.h"
 #include "nvs_flash.h"
 #include "nimble/nimble_port.h"
@@ -20,6 +23,164 @@ void ble_store_config_init(void);
 static const char *TAG = "ble_hid_mouse";
 static esp_hidd_dev_t *s_hid_device;
 static unsigned s_consecutive_report_errors;
+static volatile bool s_pairing_window_open;
+static volatile TickType_t s_pairing_window_deadline;
+static uint16_t s_connection_handle = BLE_HS_CONN_HANDLE_NONE;
+static bool s_new_peer_in_progress;
+
+#define PAIRING_BUTTON_GPIO GPIO_NUM_0
+#define PAIRING_WINDOW_SECONDS 60
+#define PAIRING_BUTTON_LONG_PRESS_MS 5000
+#define PAIRING_BUTTON_DEBOUNCE_MS 40
+#define MAX_BONDED_PEERS 3
+
+static void set_pairing_window(bool open);
+
+static int reject_bond_store_overflow(struct ble_store_status_event *event, void *arg)
+{
+    (void)arg;
+    if (event->event_code == BLE_STORE_EVENT_OVERFLOW) {
+        ESP_LOGW(TAG, "Bond store full; refusing to evict a saved device");
+        return BLE_HS_ENOMEM;
+    }
+    return 0;
+}
+
+static int bonded_peer_count(void)
+{
+    ble_addr_t peers[MAX_BONDED_PEERS];
+    int count = 0;
+    int rc = ble_store_util_bonded_peers(peers, &count, MAX_BONDED_PEERS);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Could not count bonded devices: rc=%d", rc);
+        return MAX_BONDED_PEERS;
+    }
+    return count;
+}
+
+bool ble_hid_connection_is_bonded(uint16_t conn_handle)
+{
+    struct ble_gap_conn_desc desc;
+    struct ble_store_key_sec key = {0};
+    struct ble_store_value_sec value = {0};
+    if (ble_gap_conn_find(conn_handle, &desc) != 0) return false;
+    key.peer_addr = desc.peer_id_addr;
+    return ble_store_read_peer_sec(&key, &value) == 0;
+}
+
+bool ble_hid_new_pairing_allowed(void)
+{
+    if (!s_pairing_window_open) return false;
+    if (bonded_peer_count() >= MAX_BONDED_PEERS) {
+        ESP_LOGW(TAG, "Pairing rejected: all %d bond slots are in use", MAX_BONDED_PEERS);
+        return false;
+    }
+    return true;
+}
+
+void ble_hid_connection_opened(uint16_t conn_handle)
+{
+    s_connection_handle = conn_handle;
+    s_new_peer_in_progress = !ble_hid_connection_is_bonded(conn_handle);
+}
+
+void ble_hid_connection_closed(void)
+{
+    s_connection_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_new_peer_in_progress = false;
+}
+
+void ble_hid_new_pairing_completed(void)
+{
+    if (s_new_peer_in_progress) {
+        s_new_peer_in_progress = false;
+        set_pairing_window(false);
+    }
+}
+
+static void set_pairing_window(bool open)
+{
+    s_pairing_window_open = open;
+    status_led_set_pairing_window(open);
+    if (open) {
+        s_pairing_window_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(PAIRING_WINDOW_SECONDS * 1000);
+        ESP_LOGI(TAG, "New-device pairing open for %d seconds", PAIRING_WINDOW_SECONDS);
+    } else {
+        s_pairing_window_deadline = 0;
+        ESP_LOGI(TAG, "New-device pairing closed");
+    }
+}
+
+static void clear_all_bonds(void)
+{
+    ble_addr_t peers[MAX_BONDED_PEERS];
+    int count = 0;
+    int rc = ble_store_util_bonded_peers(peers, &count, MAX_BONDED_PEERS);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Cannot list bonds for clearing: rc=%d", rc);
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        rc = ble_store_util_delete_peer(&peers[i]);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "Could not delete bond %d: rc=%d", i + 1, rc);
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "Cleared all %d bonded device(s)", count);
+    status_led_show_bonds_cleared();
+    if (s_connection_handle != BLE_HS_CONN_HANDLE_NONE) {
+        (void)ble_gap_terminate(s_connection_handle, BLE_ERR_REM_USER_CONN_TERM);
+    }
+}
+
+static void pairing_button_task(void *arg)
+{
+    (void)arg;
+    gpio_config_t config = {
+        .pin_bit_mask = 1ULL << PAIRING_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&config));
+    ESP_LOGI(TAG, "BOOT button: short press opens pairing for 60s; hold 5s clears all bonds");
+
+    bool pressed = false;
+    bool long_press_handled = false;
+    TickType_t pressed_at = 0;
+    TickType_t debounce_at = 0;
+    int stable_level = 1;
+    for (;;) {
+        TickType_t now = xTaskGetTickCount();
+        int level = gpio_get_level(PAIRING_BUTTON_GPIO);
+        if (level != stable_level && now - debounce_at >= pdMS_TO_TICKS(PAIRING_BUTTON_DEBOUNCE_MS)) {
+            stable_level = level;
+            debounce_at = now;
+            if (stable_level == 0) {
+                pressed = true;
+                long_press_handled = false;
+                pressed_at = now;
+            } else if (pressed) {
+                pressed = false;
+                if (!long_press_handled && now - pressed_at >= pdMS_TO_TICKS(PAIRING_BUTTON_DEBOUNCE_MS)) {
+                    set_pairing_window(true);
+                }
+            }
+        }
+        if (pressed && !long_press_handled && now - pressed_at >= pdMS_TO_TICKS(PAIRING_BUTTON_LONG_PRESS_MS)) {
+            long_press_handled = true;
+            set_pairing_window(false);
+            clear_all_bonds();
+        }
+        if (s_pairing_window_open && s_pairing_window_deadline &&
+            (int32_t)(now - s_pairing_window_deadline) >= 0) {
+            set_pairing_window(false);
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
 
 /* Standard relative mouse report: 8 buttons, X/Y, and both wheel axes. */
 static const uint8_t s_mouse_report_map[] = {
@@ -139,8 +300,11 @@ esp_err_t ble_hid_output_start(void)
                         TAG, "Cannot set HID battery level");
 
     ble_store_config_init();
-    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_hs_cfg.store_status_cb = reject_bond_store_overflow;
     nimble_port_freertos_init(nimble_host_task);
+    if (xTaskCreate(pairing_button_task, "pairing_button", 3072, NULL, 4, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
     ESP_LOGI(TAG, "BLE HID mouse initialized; waiting for laptop pairing");
     return ESP_OK;
 }

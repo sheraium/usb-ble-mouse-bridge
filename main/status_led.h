@@ -15,3 +15,5 @@ void status_led_set_ble_connected(bool connected);
 void status_led_set_receiver_connected(bool connected);
 void status_led_set_fault(status_led_fault_t fault, bool active);
 void status_led_mouse_activity(void);
+void status_led_set_pairing_window(bool open);
+void status_led_show_bonds_cleared(void);

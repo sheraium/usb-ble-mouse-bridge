@@ -76,6 +76,18 @@ revisions may use GPIO38 instead.
 - Slow orange blink: BLE connected, but no supported USB mouse interface is
   present.
 - Pulsing red: startup failure or repeated USB/BLE report errors.
+- Fast blue blink: the 60-second new-device pairing window is open.
+- Fast red blink for about one second: all saved bonds were cleared.
+
+## BLE pairing controls
+
+The BOOT button (GPIO0) controls new pairing. A short press opens pairing for
+60 seconds; a newly bonded computer closes the window. Previously bonded
+computers can reconnect without opening it. Holding BOOT for 5 seconds clears
+all saved bonds and disconnects the current BLE host; it does not open pairing.
+Press BOOT briefly afterward to pair again. Up to three computers are retained.
+When all three slots are occupied, new devices are rejected and existing bonds
+are not automatically evicted. RESET only restarts the board and keeps bonds.
 
 ## License
 

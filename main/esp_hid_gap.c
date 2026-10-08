@@ -14,6 +14,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_hid_gap.h"
+#include "ble_hid_output.h"
 
 #if CONFIG_BT_NIMBLE_ENABLED
 #include "host/ble_hs.h"
@@ -818,6 +819,13 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
                 event->connect.status == 0 ? "established" : "failed",
                 event->connect.status);
         if (event->connect.status == 0) {
+            ble_hid_connection_opened(event->connect.conn_handle);
+            bool bonded = ble_hid_connection_is_bonded(event->connect.conn_handle);
+            if (!bonded && !ble_hid_new_pairing_allowed()) {
+                ESP_LOGW(TAG, "Rejecting unpaired device; press BOOT to open pairing");
+                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                return 0;
+            }
             /* HOGP hosts may defer pairing until the peripheral requests
              * link encryption.  Start Just Works bonding now so macOS can
              * finish adding the mouse instead of leaving it under Nearby. */
@@ -832,6 +840,7 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnect; reason=%d", event->disconnect.reason);
+        ble_hid_connection_closed();
 
         return 0;
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -877,6 +886,9 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
         if (event->enc_change.status == 0) {
             rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
             assert(rc == 0);
+            if (desc.sec_state.bonded) {
+                ble_hid_new_pairing_completed();
+            }
             /* Demo report task omitted: this build only verifies BLE HID pairing. */
         } else {
             ESP_LOGW(TAG, "encryption failed; waiting for disconnect/retry");
@@ -893,20 +905,10 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        /* We already have a bond with the peer, but it is attempting to
-         * establish a new secure link.  This app sacrifices security for
-         * convenience: just throw away the old bond and accept the new link.
-         */
-
-        /* Delete the old bond. */
+        /* Preserve the existing bond; ask the peer to use its stored keys. */
         rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
         assert(rc == 0);
-        ble_store_util_delete_peer(&desc.peer_id_addr);
-
-        /* Return BLE_GAP_REPEAT_PAIRING_RETRY to indicate that the host should
-         * continue with the pairing operation.
-         */
-        return BLE_GAP_REPEAT_PAIRING_RETRY;
+        return BLE_GAP_REPEAT_PAIRING_IGNORE;
 
     case BLE_GAP_EVENT_PASSKEY_ACTION:
         ESP_LOGI(TAG, "PASSKEY_ACTION_EVENT started");

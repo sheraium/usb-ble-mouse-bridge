@@ -23,8 +23,10 @@ static rmt_encoder_handle_t s_led_encoder;
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_ble_connected;
 static bool s_receiver_connected;
+static bool s_pairing_window;
 static uint32_t s_faults;
 static TickType_t s_activity_until;
+static TickType_t s_bonds_cleared_until;
 
 static size_t ws2812_encode(const void *data, size_t data_size,
                             size_t symbols_written, size_t symbols_free,
@@ -76,21 +78,35 @@ static void color_for_tick(TickType_t now, uint8_t rgb[3])
     bool ble_connected;
     bool receiver_connected;
     bool activity;
+    bool pairing_window;
+    bool bonds_cleared;
     uint32_t faults;
 
     portENTER_CRITICAL(&s_state_mux);
     ble_connected = s_ble_connected;
     receiver_connected = s_receiver_connected;
     faults = s_faults;
+    pairing_window = s_pairing_window;
+    bonds_cleared = (int32_t)(s_bonds_cleared_until - now) > 0;
     activity = ble_connected && receiver_connected &&
                (int32_t)(s_activity_until - now) > 0;
     portEXIT_CRITICAL(&s_state_mux);
 
-    if (faults) {
+    if (bonds_cleared) {
+        bool on = ((now / pdMS_TO_TICKS(100)) & 1u) == 0;
+        rgb[0] = on ? 72 : 0;
+        rgb[1] = 0;
+        rgb[2] = 0;
+    } else if (faults) {
         bool on = ((now / pdMS_TO_TICKS(250)) & 1u) == 0;
         rgb[0] = on ? 64 : 0;
         rgb[1] = 0;
         rgb[2] = 0;
+    } else if (pairing_window) {
+        bool on = ((now / pdMS_TO_TICKS(100)) & 1u) == 0;
+        rgb[0] = 0;
+        rgb[1] = 0;
+        rgb[2] = on ? 72 : 0;
     } else if (!ble_connected) {
         bool on = ((now / pdMS_TO_TICKS(500)) & 1u) == 0;
         rgb[0] = 0;
@@ -185,5 +201,19 @@ void status_led_mouse_activity(void)
 {
     portENTER_CRITICAL(&s_state_mux);
     s_activity_until = xTaskGetTickCount() + pdMS_TO_TICKS(STATUS_LED_ACTIVITY_MS);
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+void status_led_set_pairing_window(bool open)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_pairing_window = open;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+void status_led_show_bonds_cleared(void)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_bonds_cleared_until = xTaskGetTickCount() + pdMS_TO_TICKS(900);
     portEXIT_CRITICAL(&s_state_mux);
 }
