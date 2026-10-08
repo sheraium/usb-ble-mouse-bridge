@@ -63,6 +63,19 @@ The firmware does not implement Logitech HID++ features. Endpoint descriptor
 inspection and board-specific VBUS electrical characterization are not part of
 the current public USB HID API/firmware path.
 
+## RGB status LED
+
+On the Goouuu ESP32-S3 N16R8 dual-USB-C board, the onboard WS2812 RGB LED is
+driven through GPIO38. Other N16R8 board variants may use a different pin.
+
+- Slow blue blink: waiting for a BLE host connection.
+- Solid green: BLE connected and a standard USB mouse interface is present.
+- Fast cyan pulses: mouse reports are being forwarded over BLE; returns to
+  solid green after activity stops.
+- Slow orange blink: BLE connected, but no supported USB mouse interface is
+  present.
+- Pulsing red: startup failure or repeated USB/BLE report errors.
+
 ## License
 
 This project is distributed under the MIT License; see `LICENSE`.

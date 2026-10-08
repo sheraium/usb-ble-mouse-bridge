@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "hid_mouse_parser.h"
+#include "status_led.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -24,6 +25,18 @@ typedef struct {
 static QueueHandle_t s_hid_events;
 static usb_mouse_event_callback_t s_mouse_callback;
 static void *s_mouse_callback_arg;
+static uint8_t s_active_mouse_interfaces;
+static uint8_t s_consecutive_usb_errors;
+
+static void mouse_interface_presence_changed(bool connected)
+{
+    if (connected) {
+        if (s_active_mouse_interfaces < UINT8_MAX) ++s_active_mouse_interfaces;
+    } else if (s_active_mouse_interfaces > 0) {
+        --s_active_mouse_interfaces;
+    }
+    status_led_set_receiver_connected(s_active_mouse_interfaces > 0);
+}
 
 static void print_wide_ascii(const char *label, const wchar_t *value)
 {
@@ -62,6 +75,8 @@ static void hid_interface_callback(hid_host_device_handle_t handle,
         esp_err_t err = hid_host_device_get_raw_input_report_data(
             handle, report, sizeof(report), &report_length);
         if (err == ESP_OK) {
+            s_consecutive_usb_errors = 0;
+            status_led_set_fault(STATUS_LED_FAULT_USB, false);
             MouseEvent mouse = {0};
             hid_mouse_parser_t *parser = arg;
             if (parser && hid_mouse_parser_parse(parser, report, report_length, &mouse)) {
@@ -72,12 +87,22 @@ static void hid_interface_callback(hid_host_device_handle_t handle,
                 dump_bytes("Raw input report", report, report_length);
             }
         } else {
+            if (++s_consecutive_usb_errors >= 3) {
+                status_led_set_fault(STATUS_LED_FAULT_USB, true);
+            }
             ESP_LOGW(TAG, "Could not read input report: %s", esp_err_to_name(err));
         }
     } else if (event == HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR) {
+        if (++s_consecutive_usb_errors >= 3) {
+            status_led_set_fault(STATUS_LED_FAULT_USB, true);
+        }
         ESP_LOGW(TAG, "HID transfer error");
     } else if (event == HID_HOST_INTERFACE_EVENT_DISCONNECTED) {
         ESP_LOGI(TAG, "HID interface disconnected; closing interface");
+        hid_mouse_parser_t *parser = arg;
+        if (parser && parser->mouse_collection && parser->field_count > 0) {
+            mouse_interface_presence_changed(false);
+        }
         free(arg);
         esp_err_t err = hid_host_device_close(handle);
         if (err != ESP_OK) {
@@ -118,6 +143,7 @@ static void inspect_connected_interface(hid_host_device_handle_t handle)
     });
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Cannot open interface %u: %s", params.iface_num, esp_err_to_name(err));
+        free(parser);
         return;
     }
 
@@ -136,6 +162,7 @@ static void inspect_connected_interface(hid_host_device_handle_t handle)
         dump_bytes("HID report descriptor", descriptor, descriptor_length);
         err = hid_mouse_parser_init(parser, descriptor, descriptor_length);
         if (err == ESP_OK) {
+            mouse_interface_presence_changed(true);
             ESP_LOGI(TAG, "Standard mouse parser ready (%u mapped fields)",
                      (unsigned)parser->field_count);
         } else {

@@ -6,6 +6,7 @@
 #include "esp_hid_common.h"
 #include "esp_hid_gap.h"
 #include "esp_log.h"
+#include "status_led.h"
 #include "nvs_flash.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -18,6 +19,7 @@ void ble_store_config_init(void);
 
 static const char *TAG = "ble_hid_mouse";
 static esp_hidd_dev_t *s_hid_device;
+static unsigned s_consecutive_report_errors;
 
 /* Standard relative mouse report: 8 buttons, X/Y, and both wheel axes. */
 static const uint8_t s_mouse_report_map[] = {
@@ -87,9 +89,13 @@ static void hid_event_callback(void *handler_args, esp_event_base_t base,
         ESP_ERROR_CHECK(esp_hid_ble_gap_adv_start());
         break;
     case ESP_HIDD_CONNECT_EVENT:
+        status_led_set_ble_connected(true);
+        status_led_set_fault(STATUS_LED_FAULT_BLE, false);
         ESP_LOGI(TAG, "Laptop connected to BLE HID mouse");
         break;
     case ESP_HIDD_DISCONNECT_EVENT:
+        status_led_set_ble_connected(false);
+        status_led_set_fault(STATUS_LED_FAULT_BLE, false);
         ESP_LOGI(TAG, "Laptop disconnected; restarting advertising");
         ESP_ERROR_CHECK(esp_hid_ble_gap_adv_start());
         break;
@@ -139,6 +145,7 @@ static int8_t clamp_axis(int16_t value)
 void ble_hid_output_send(const MouseEvent *event)
 {
     if (!event || !s_hid_device || !esp_hidd_dev_connected(s_hid_device)) return;
+    status_led_mouse_activity();
 
     /* BLE report has 8 buttons, then relative X/Y/vertical/horizontal wheel. */
     int32_t dx_left = event->dx;
@@ -153,7 +160,15 @@ void ble_hid_output_send(const MouseEvent *event)
             first ? (uint8_t)event->horizontal_wheel : 0,
         };
         esp_err_t err = esp_hidd_dev_input_set(s_hid_device, 0, 0, report, sizeof(report));
-        if (err != ESP_OK) ESP_LOGW(TAG, "BLE mouse report failed: %s", esp_err_to_name(err));
+        if (err != ESP_OK) {
+            if (++s_consecutive_report_errors >= 3) {
+                status_led_set_fault(STATUS_LED_FAULT_BLE, true);
+            }
+            ESP_LOGW(TAG, "BLE mouse report failed: %s", esp_err_to_name(err));
+        } else {
+            s_consecutive_report_errors = 0;
+            status_led_set_fault(STATUS_LED_FAULT_BLE, false);
+        }
         dx_left -= (int8_t)report[1];
         dy_left -= (int8_t)report[2];
         first = false;
