@@ -84,21 +84,31 @@ static void hid_event_callback(void *handler_args, esp_event_base_t base,
     (void)event_data;
 
     switch ((esp_hidd_event_t)id) {
-    case ESP_HIDD_START_EVENT:
+    case ESP_HIDD_START_EVENT: {
         ESP_LOGI(TAG, "HID service ready; advertising as '%s'", s_hid_config.device_name);
-        ESP_ERROR_CHECK(esp_hid_ble_gap_adv_start());
+        esp_err_t adv_err = esp_hid_ble_gap_adv_start();
+        if (adv_err != ESP_OK) {
+            status_led_set_fault(STATUS_LED_FAULT_STARTUP, true);
+            ESP_LOGE(TAG, "BLE advertising failed: %s", esp_err_to_name(adv_err));
+        }
         break;
+    }
     case ESP_HIDD_CONNECT_EVENT:
         status_led_set_ble_connected(true);
         status_led_set_fault(STATUS_LED_FAULT_BLE, false);
         ESP_LOGI(TAG, "Laptop connected to BLE HID mouse");
         break;
-    case ESP_HIDD_DISCONNECT_EVENT:
+    case ESP_HIDD_DISCONNECT_EVENT: {
         status_led_set_ble_connected(false);
         status_led_set_fault(STATUS_LED_FAULT_BLE, false);
         ESP_LOGI(TAG, "Laptop disconnected; restarting advertising");
-        ESP_ERROR_CHECK(esp_hid_ble_gap_adv_start());
+        esp_err_t adv_err = esp_hid_ble_gap_adv_start();
+        if (adv_err != ESP_OK) {
+            status_led_set_fault(STATUS_LED_FAULT_STARTUP, true);
+            ESP_LOGE(TAG, "Could not restart BLE advertising: %s", esp_err_to_name(adv_err));
+        }
         break;
+    }
     default:
         break;
     }

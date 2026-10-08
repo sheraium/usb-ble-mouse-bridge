@@ -88,27 +88,27 @@ static void color_for_tick(TickType_t now, uint8_t rgb[3])
 
     if (faults) {
         bool on = ((now / pdMS_TO_TICKS(250)) & 1u) == 0;
-        rgb[0] = on ? 48 : 0;
+        rgb[0] = on ? 64 : 0;
         rgb[1] = 0;
         rgb[2] = 0;
     } else if (!ble_connected) {
         bool on = ((now / pdMS_TO_TICKS(500)) & 1u) == 0;
         rgb[0] = 0;
         rgb[1] = 0;
-        rgb[2] = on ? 40 : 0;
+        rgb[2] = on ? 56 : 0;
     } else if (!receiver_connected) {
         bool on = ((now / pdMS_TO_TICKS(500)) & 1u) == 0;
-        rgb[0] = on ? 28 : 0;
-        rgb[1] = on ? 10 : 0;
+        rgb[0] = on ? 48 : 0;
+        rgb[1] = on ? 18 : 0;
         rgb[2] = 0;
     } else if (activity) {
         bool on = ((now / pdMS_TO_TICKS(40)) & 1u) == 0;
         rgb[0] = 0;
-        rgb[1] = on ? 36 : 0;
-        rgb[2] = on ? 40 : 0;
+        rgb[1] = on ? 80 : 0;
+        rgb[2] = on ? 88 : 0;
     } else {
         rgb[0] = 0;
-        rgb[1] = 36;
+        rgb[1] = 80;
         rgb[2] = 0;
     }
 }
